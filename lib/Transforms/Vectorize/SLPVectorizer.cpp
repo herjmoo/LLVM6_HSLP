@@ -148,6 +148,10 @@ static cl::opt<bool>
     ViewSLPTree("view-slp-tree", cl::Hidden,
                 cl::desc("Display the SLP trees with Graphviz"));
 
+static cl::opt<bool>
+    EnableHSLP("enable-hslp", cl::Hidden,
+                cl::desc("Apply the Hierarchical SLP"));
+
 // Limit the number of alias checks. The limit is chosen so that
 // it has no negative effect on the llvm benchmarks.
 static const unsigned AliasedCheckLimit = 10;
@@ -4198,25 +4202,31 @@ bool SLPVectorizerPass::runImpl(Function &F, ScalarEvolution *SE_,
 
   // Scan the blocks in the function in post order.
   for (auto BB : post_order(&F.getEntryBlock())) {
-    collectSeedInstructions(BB);
-
-    // Vectorize trees that end at stores.
-    if (!Stores.empty()) {
-      DEBUG(dbgs() << "SLP: Found stores for " << Stores.size()
-                   << " underlying objects.\n");
-      Changed |= vectorizeStoreChains(R);
+    if (EnableHSLP) {
+      DEBUG(dbgs() << "HSLP: This is point to implement HSLP."
+                   << " (No implementation yet.\n");
     }
+    else {
+      collectSeedInstructions(BB);
 
-    // Vectorize trees that end at reductions.
-    Changed |= vectorizeChainsInBlock(BB, R);
+      // Vectorize trees that end at stores.
+      if (!Stores.empty()) {
+        DEBUG(dbgs() << "SLP: Found stores for " << Stores.size()
+                     << " underlying objects.\n");
+        Changed |= vectorizeStoreChains(R);
+      }
 
-    // Vectorize the index computations of getelementptr instructions. This
-    // is primarily intended to catch gather-like idioms ending at
-    // non-consecutive loads.
-    if (!GEPs.empty()) {
-      DEBUG(dbgs() << "SLP: Found GEPs for " << GEPs.size()
-                   << " underlying objects.\n");
-      Changed |= vectorizeGEPIndices(BB, R);
+      // Vectorize trees that end at reductions.
+      Changed |= vectorizeChainsInBlock(BB, R);
+
+      // Vectorize the index computations of getelementptr instructions. This
+      // is primarily intended to catch gather-like idioms ending at
+      // non-consecutive loads.
+      if (!GEPs.empty()) {
+        DEBUG(dbgs() << "SLP: Found GEPs for " << GEPs.size()
+                     << " underlying objects.\n");
+        Changed |= vectorizeGEPIndices(BB, R);
+      }
     }
   }
 
