@@ -18,6 +18,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Transforms/Vectorize/SLPVectorizer.h"
+#include "llvm/Transforms/Vectorize/ICVectorizer.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -151,6 +152,14 @@ static cl::opt<bool>
 static cl::opt<bool>
     EnableHSLP("enable-hslp", cl::Hidden,
                 cl::desc("Apply the Hierarchical SLP"));
+
+static cl::opt<unsigned> BBsizeMinHSLP(
+    "hslp-bbsize-min", cl::init(200), cl::Hidden,
+    cl::desc("Minimum size of BasicBlock to apply Hierarchical SLP"));
+
+static cl::opt<unsigned> BBsizeMaxHSLP(
+    "hslp-bbsize-max", cl::init(100000), cl::Hidden,
+    cl::desc("Maximum size of BasicBlock to apply Hierarchical SLP"));
 
 // Limit the number of alias checks. The limit is chosen so that
 // it has no negative effect on the llvm benchmarks.
@@ -521,6 +530,19 @@ namespace slpvectorizer {
 
 /// Bottom Up SLP Vectorizer.
 class BoUpSLP {
+private:
+  map<Value *, bool> vectorizedInsts;
+public:
+  bool isVectoirzedInsts(Value *v) {
+    if (vectorizedInsts.find(v) == vectorizedInsts.end())
+      return false;
+    else
+      return true;
+  }
+  void clearVecotorizedInsts() {
+    vectorizedInsts.clear();
+  }
+
 public:
   using ValueList = SmallVector<Value *, 8>;
   using InstrList = SmallVector<Instruction *, 16>;
@@ -3303,6 +3325,9 @@ BoUpSLP::vectorizeTree(ExtraValueToDebugLocsMap &ExternallyUsedValues) {
         Value *Undef = UndefValue::get(Ty);
         Scalar->replaceAllUsesWith(Undef);
       }
+
+      vectorizedInsts[Scalar] = false;
+
       DEBUG(dbgs() << "SLP: \tErasing scalar:" << *Scalar << ".\n");
       eraseInstruction(cast<Instruction>(Scalar));
     }
@@ -4202,9 +4227,61 @@ bool SLPVectorizerPass::runImpl(Function &F, ScalarEvolution *SE_,
 
   // Scan the blocks in the function in post order.
   for (auto BB : post_order(&F.getEntryBlock())) {
-    if (EnableHSLP) {
-      DEBUG(dbgs() << "HSLP: This is point to implement HSLP."
-                   << " (No implementation yet.\n");
+    if (EnableHSLP && BBsizeMinHSLP<=BB->size() && BB->size()<=BBsizeMaxHSLP ) {
+      DEBUG(dbgs() << "HSLP: This is strarting point to implement HSLP.\n");
+
+      if (F.getName().find("_ref")!=std::string::npos) {
+    	  errs() << "DEBUG: Skip optimizing *_ref function\n";
+      }
+      else {
+		  //nExaminedBBs++;
+		  //nLocalExaminedBBs++;
+		  ICVectorizer icvec;
+		  vector<pair<Value *, Value *> > *seeds = icvec.FindSeeds(BB, AA, 0/*HierarchicalConfig*/);
+		  if (seeds->size()) {
+			  unsigned int vectorizedSeeds = 0;
+			  for (unsigned int i = 0; i < seeds->size(); i++) {
+				  BoUpSLP::ValueList sv;
+				  sv.push_back((*seeds)[i].first);
+				  sv.push_back((*seeds)[i].second);
+
+				  errs() << "DEBUG: ICVectorizer try\n";
+				  //(*seeds)[i].first->dump();
+				  //(*seeds)[i].second->dump();
+				  (*seeds)[i].first->print(outs());
+				  (*seeds)[i].second->print(outs());
+				  if (!R.isVectoirzedInsts((*seeds)[i].first) && !R.isVectoirzedInsts((*seeds)[i].second)) {
+					  for (unsigned Size = R.getMaxVecRegSize(); Size >= R.getMinVecRegSize(); Size /= 2) {
+						  if (vectorizeStoreChain(sv, R, Size)) {
+							  errs() << "Vectorized with normalSLP(" << Size << ")\n";
+							  vectorizedSeeds++;
+							  //vectorized = true;
+							  Changed |= true;
+							  break;
+						  }
+					  }
+				  }
+				  else {
+					  errs() << "Already vectorized\n";
+				  }
+			  }
+
+			  errs() << "DEBUG: Number of seeds L" << 0/*HierarchicalConfig*/ << ": " << seeds->size() << "\n";
+			  errs() << "DEBUG: Vectorized seeds: " << vectorizedSeeds << "\n";
+
+			  errs() << "< Final statements >\n";
+			  for (BasicBlock::iterator I = BB->begin(); I != BB->end(); I++) {
+				  //I->dump();
+				  I->print(errs()); errs() << "\n";
+			  }
+			  errs() << "\n";
+		  }
+		  else
+			  errs() << "DEBUG: No seeds\n";
+
+		  delete seeds;
+      }
+
     }
     else {
       collectSeedInstructions(BB);
@@ -4293,6 +4370,7 @@ bool SLPVectorizerPass::vectorizeStoreChain(ArrayRef<Value *> Chain, BoUpSLP &R,
 
       using namespace ore;
 
+      if (!EnableHSLP)
       R.getORE()->emit(OptimizationRemark(SV_NAME, "StoresVectorized",
                                           cast<StoreInst>(Chain[i]))
                        << "Stores SLP vectorized with cost " << NV("Cost", Cost)
